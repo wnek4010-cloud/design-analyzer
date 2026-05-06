@@ -177,19 +177,110 @@ def extract_classes(files, src_dir):
         implements = [x.strip() for x in (cls_m.group(4) or '').split(',') if x.strip()]
         anns = re.findall(r'@(\w+)', content[:500])
         fields = []
-        for f in re.finditer(r'(?:private|protected|public)\s+(?:static\s+)?(?:final\s+)?(\w+)\s+(\w+)\s*;', content):
-            ft, fn = f.groups()
+        for f in re.finditer(
+            r'(private|protected|public)\s+(?:static\s+)?(?:final\s+)?(\w+)\s+(\w+)\s*(?:=\s*([^;]+))?;',
+            content):
+            acc, ft, fn, default = f.group(1), f.group(2), f.group(3), (f.group(4) or '').strip()
             if fn not in ('serialVersionUID','log','logger','INSTANCE'):
-                fields.append({'type':ft,'name':fn})
+                fields.append({'access':acc,'type':ft,'name':fn,
+                               'default':default[:30] if default else 'N/A','remark':''})
         methods = []
-        for m in re.finditer(r'(?:public|private|protected)\s+(?:static\s+)?(\w+)\s+(\w+)\s*\([^)]*\)\s*(?:throws[^{]+)?\{', content):
-            rt, mn = m.groups()
-            if mn not in ('main',) and not mn.startswith('get') and not mn.startswith('set'):
-                methods.append({'return':rt,'name':mn})
+        for m in re.finditer(
+            r'(public|private|protected)\s+(?:static\s+)?(\w+)\s+(\w+)\s*\(([^)]*)\)\s*(?:throws[^{]+)?\{',
+            content):
+            acc, rt, mn, params_raw = m.groups()
+            if mn in ('main',): continue
+            params = []
+            for p in params_raw.split(','):
+                p = re.sub(r'@\w+(?:\([^)]*\))?\s*', '', p).strip()
+                pm = re.match(r'(?:final\s+)?([\w<>\[\].,\s]+)\s+(\w+)$', p.strip())
+                if pm:
+                    params.append(pm.group(1).strip())
+            methods.append({'access':acc,'return':rt,'name':mn,'params':params,'remark':''})
         classes.append({'name':cls_name,'package':pkg,'kind':kind,'extends':extends,
                        'implements':implements,'annotations':anns,
-                       'fields':fields[:10],'methods':methods[:8],'source':rel})
+                       'fields':fields[:15],'methods':methods[:15],'source':rel})
     return classes
+
+def group_classes_by_domain(classes):
+    """클래스를 도메인별로 그룹핑 (Controller+Service+Mapper 세트)"""
+    ROLE_MAP = [
+        ('controller', ['RestController','Controller']),
+        ('service',    ['ServiceImpl','Service']),
+        ('mapper',     ['MapperImpl','Mapper','MDAO','DAOImpl','DAO','Dao','RepositoryImpl','Repository']),
+        ('component',  ['Component','Config','Util','Helper','Filter','Interceptor','Aspect','Handler']),
+        ('model',      ['VO','DTO','Request','Response','Entity','Model','Form']),
+    ]
+
+    def get_domain_role(name):
+        for role, suffixes in ROLE_MAP:
+            for sfx in sorted(suffixes, key=len, reverse=True):
+                if name.endswith(sfx) and len(name) > len(sfx):
+                    return name[:-len(sfx)], role
+        return name, 'class'
+
+    groups = {}
+    for cls in classes:
+        domain, role = get_domain_role(cls['name'])
+        if domain not in groups:
+            groups[domain] = []
+        groups[domain].append({**cls, 'role': role})
+
+    result = []
+    for idx, (domain, cls_list) in enumerate(sorted(groups.items()), 1):
+        result.append({'id': f'DC-{idx:03d}', 'domain': domain, 'classes': cls_list})
+    return result
+
+# ── 인터페이스 파싱 ──────────────────────────────────────
+def extract_interfaces(files, src_dir):
+    """외부 연계/인터페이스 항목 추출"""
+    ifaces = []
+    no = 1
+
+    for fp in files:
+        rel = str(fp.relative_to(src_dir))
+        content = read(fp)
+
+        if fp.suffix.lower() == '.java':
+            # @FeignClient
+            fc = re.search(
+                r'@FeignClient\s*\([^)]*(?:name|value)\s*=\s*["\']([^"\']+)["\']', content)
+            if fc:
+                methods = re.findall(
+                    r'@(?:Get|Post|Put|Delete|Patch)Mapping\s*(?:\([^)]*\))?\s*\n\s*\w+\s+(\w+)\s*\(',
+                    content)
+                items = [{'name': m, 'type': 'method'} for m in methods[:10]]
+                ifaces.append({'no': f'IA_{no:03d}', 'name': fc.group(1),
+                               'id': fp.stem, 'method': 'Online/API',
+                               'type': 'FeignClient', 'items': items, 'source': rel})
+                no += 1
+
+            # RestTemplate / WebClient calls
+            rest_urls = re.findall(
+                r'(?:exchange|getFor\w+|postFor\w+|put|delete)\s*\(\s*["\']([^"\']{5,100})["\']',
+                content)
+            if rest_urls:
+                cls_m = re.search(r'class\s+(\w+)', content)
+                name = cls_m.group(1) if cls_m else fp.stem
+                items = [{'name': u, 'type': 'url'} for u in rest_urls[:10]]
+                ifaces.append({'no': f'IA_{no:03d}', 'name': name,
+                               'id': fp.stem, 'method': 'Online/REST',
+                               'type': 'RestTemplate', 'items': items, 'source': rel})
+                no += 1
+
+        elif fp.suffix.lower() in ('.yml', '.yaml', '.properties'):
+            # URL/endpoint 설정값
+            urls = re.findall(
+                r'(?:url|endpoint|api[-_]url|base[-_]url|host)\s*[:=]\s*(https?://[^\s\n#]+)',
+                content, re.I)
+            if urls:
+                items = [{'name': u, 'type': 'config'} for u in urls[:10]]
+                ifaces.append({'no': f'IA_{no:03d}', 'name': fp.name,
+                               'id': fp.stem, 'method': 'Config',
+                               'type': 'Properties', 'items': items, 'source': rel})
+                no += 1
+
+    return ifaces
 
 # ── AI 보완 ──────────────────────────────────────────────
 def call_claude_api(api_key, tables, apis, classes, plan_text=''):
@@ -280,7 +371,7 @@ def generate_erd_svg(tables):
     return svg
 
 # ── HTML 리포트 생성 (실제 설계서 형식) ──────────────────
-def generate_report(tables, apis, classes, ai_result, src_dir, plan_file, output_path):
+def generate_report(tables, apis, classes, ai_result, src_dir, plan_file, output_path, files=None):
     now = datetime.now().strftime('%Y-%m-%d %H:%M')
     date_str = datetime.now().strftime('%Y. %m. %d')
 
@@ -344,31 +435,119 @@ def generate_report(tables, apis, classes, ai_result, src_dir, plan_file, output
           <div class="api-params">{params_html or '<span style="color:#94a3b8;font-size:11px">파라미터 없음</span>'}</div>
         </div>'''
 
-    # ── 클래스 다이어그램 ──
+    # ── 클래스설계서 (PDF 형식 적용) ──
+    ROLE_LABEL = {'controller':'Controller','service':'Service','mapper':'Mapper/MDAO',
+                  'component':'Component','model':'VO/DTO','class':'Class'}
     KIND_COLOR = {'class':'#dbeafe','interface':'#dcfce7','abstract':'#fef3c7','enum':'#f3e8ff'}
-    cls_cards = ''
-    for cls in classes[:50]:
-        kc = KIND_COLOR.get(cls['kind'],'#f1f5f9')
-        kind_label = {'class':'클래스','interface':'인터페이스','abstract':'추상클래스','enum':'열거형'}.get(cls['kind'],cls['kind'])
-        fields_h = ''.join(f'<div class="cls-field">- {f["type"]} {f["name"]}</div>' for f in cls['fields'][:6])
-        methods_h = ''.join(f'<div class="cls-method">+ {m["name"]}()</div>' for m in cls['methods'][:5])
-        ext_h = f'<div class="cls-rel">↑ {cls["extends"]}</div>' if cls['extends'] else ''
-        impl_h = f'<div class="cls-rel">⊢ {", ".join(cls["implements"][:2])}</div>' if cls['implements'] else ''
-        ann_h = ''.join(f'<span class="cls-ann">@{a}</span>' for a in cls['annotations'][:3])
-        pkg_short = cls['package'].split('.')[-1] if cls['package'] else ''
-        cls_cards += f'''
-        <div class="cls-card">
-          <div class="cls-head" style="background:{kc}">
-            <div class="cls-anns">{ann_h}</div>
-            <div class="cls-name">{cls['name']}</div>
-            <div class="cls-pkg">{pkg_short} · {kind_label}</div>
-            {ext_h}{impl_h}
-          </div>
-          <div class="cls-body">
-            {fields_h}
-            {'<div class="cls-divider"></div>' if fields_h and methods_h else ''}
-            {methods_h}
-          </div>
+    cls_design_sections = ''
+    cls_groups = group_classes_by_domain(classes)
+    for grp in cls_groups:
+        # 클래스 구성 표
+        comp_rows = ''
+        for sub_no, cls in enumerate(grp['classes'], 1):
+            sub_id = f"{grp['id']}.{sub_no:02d}"
+            role = ROLE_LABEL.get(cls.get('role','class'), cls.get('role',''))
+            comp_rows += f'<tr><td style="text-align:center">{sub_id}</td><td style="text-align:center">{role}</td><td style="font-family:monospace;font-weight:600">{cls["name"]}</td><td style="color:#64748b">{cls["package"]}</td></tr>'
+        # 클래스 상세설계 (멤버변수 + 메서드)
+        detail_blocks = ''
+        for cls in grp['classes']:
+            kc = KIND_COLOR.get(cls['kind'],'#f1f5f9')
+            kind_label = {'class':'클래스','interface':'인터페이스','abstract':'추상클래스','enum':'열거형'}.get(cls['kind'],cls['kind'])
+            ann_text = ' '.join(f'@{a}' for a in cls['annotations'][:4])
+            ext_text = f'extends {cls["extends"]}' if cls['extends'] else ''
+            impl_text = f'implements {", ".join(cls["implements"][:3])}' if cls['implements'] else ''
+            # 멤버변수 행
+            var_rows = ''.join(
+                f'<tr><td style="font-family:monospace">{f["name"]}</td>'
+                f'<td style="text-align:center">{f["access"]}</td>'
+                f'<td style="font-family:monospace;color:#7c3aed">{f["type"]}</td>'
+                f'<td style="color:#64748b">{f["default"]}</td>'
+                f'<td>{f["remark"]}</td></tr>'
+                for f in cls['fields']
+            ) or '<tr><td colspan="5" style="color:#94a3b8;text-align:center">멤버변수 없음</td></tr>'
+            # 메서드 행
+            method_rows = ''.join(
+                f'<tr><td style="font-family:monospace;font-weight:600;color:#1d4ed8">{m["name"]}</td>'
+                f'<td style="text-align:center">{m["access"]}</td>'
+                f'<td style="font-family:monospace;font-size:11px">{", ".join(m["params"][:5]) if m["params"] else "-"}</td>'
+                f'<td style="font-family:monospace;color:#059669">{m["return"]}</td>'
+                f'<td>{m["remark"]}</td></tr>'
+                for m in cls['methods']
+            ) or '<tr><td colspan="5" style="color:#94a3b8;text-align:center">메서드 없음</td></tr>'
+            detail_blocks += f'''
+            <div class="cls-detail-block">
+              <table class="cls-detail-meta">
+                <tr>
+                  <td class="meta-label">클래스 ID</td><td class="meta-val mono">{cls["name"]}</td>
+                  <td class="meta-label">패키지</td><td class="meta-val mono" style="font-size:10px">{cls["package"]}</td>
+                </tr>
+                <tr>
+                  <td class="meta-label">종류</td><td class="meta-val">{kind_label} <span style="color:#7c3aed;font-size:11px">{ann_text}</span></td>
+                  <td class="meta-label">상속/구현</td><td class="meta-val" style="font-size:11px">{ext_text} {impl_text}</td>
+                </tr>
+                <tr><td class="meta-label">소스</td><td class="meta-val mono" colspan="3" style="font-size:10px;color:#64748b">{cls["source"]}</td></tr>
+              </table>
+              <div class="cls-subsec-title">멤버변수</div>
+              <table class="cls-var-tbl">
+                <thead><tr><th>변수명</th><th style="width:80px">접근제어자</th><th style="width:130px">타입</th><th style="width:120px">초기값</th><th>비고</th></tr></thead>
+                <tbody>{var_rows}</tbody>
+              </table>
+              <div class="cls-subsec-title" style="margin-top:8px">메서드</div>
+              <table class="cls-var-tbl">
+                <thead><tr><th>메서드명</th><th style="width:80px">접근제어자</th><th>파라미터(타입)</th><th style="width:100px">리턴타입</th><th>비고</th></tr></thead>
+                <tbody>{method_rows}</tbody>
+              </table>
+            </div>'''
+        cls_design_sections += f'''
+        <div class="cls-domain-block">
+          <div class="cls-domain-title">{grp["id"]} — {grp["domain"]}</div>
+          <div class="cls-subsec-label">클래스 구성</div>
+          <table class="cls-comp-tbl">
+            <thead><tr><th style="width:100px">클래스 ID</th><th style="width:100px">분류</th><th style="width:200px">클래스명</th><th>패키지</th></tr></thead>
+            <tbody>{comp_rows}</tbody>
+          </table>
+          <div class="cls-subsec-label" style="margin-top:12px">클래스 상세설계</div>
+          {detail_blocks}
+        </div>'''
+
+    # ── 인터페이스설계서 (PDF 형식 적용) ──
+    ifaces = extract_interfaces(files, Path(src_dir)) if files else []
+    IF_TYPE_COLOR = {'FeignClient':'#dbeafe','RestTemplate':'#dcfce7','Properties':'#fef3c7','Config':'#fef3c7'}
+    # IF 목록 표
+    if_list_rows = ''
+    for ia in ifaces:
+        tc = IF_TYPE_COLOR.get(ia['type'],'#f1f5f9')
+        if_list_rows += f'''<tr>
+          <td style="text-align:center;font-weight:700;color:#1d4ed8">{ia["no"]}</td>
+          <td style="font-family:monospace;font-weight:600">{ia["name"]}</td>
+          <td style="font-family:monospace;font-size:11px">{ia["id"]}</td>
+          <td style="text-align:center"><span style="background:{tc};padding:2px 7px;border-radius:4px;font-size:11px">{ia["type"]}</span></td>
+          <td style="text-align:center">{ia["method"]}</td>
+          <td style="font-size:10px;color:#64748b">{ia["source"]}</td>
+        </tr>'''
+    # IF 상세
+    if_detail_sections = ''
+    for ia in ifaces:
+        items_html = ''
+        for item in ia['items']:
+            label = item.get('name','')
+            itype = item.get('type','')
+            items_html += f'<tr><td style="font-family:monospace">{label}</td><td style="color:#64748b">{itype}</td></tr>'
+        if_detail_sections += f'''
+        <div class="if-detail-block">
+          <div class="if-detail-title">{ia["no"]} — {ia["name"]}</div>
+          <table class="cls-detail-meta">
+            <tr>
+              <td class="meta-label">IF No.</td><td class="meta-val">{ia["no"]}</td>
+              <td class="meta-label">시스템 ID</td><td class="meta-val mono">{ia["id"]}</td>
+            </tr>
+            <tr>
+              <td class="meta-label">IF방식</td><td class="meta-val">{ia["method"]}</td>
+              <td class="meta-label">유형</td><td class="meta-val">{ia["type"]}</td>
+            </tr>
+            <tr><td class="meta-label">소스</td><td class="meta-val mono" colspan="3" style="font-size:10px;color:#64748b">{ia["source"]}</td></tr>
+          </table>
+          {'<table class="cls-var-tbl" style="margin-top:8px"><thead><tr><th>연계 항목</th><th style="width:100px">유형</th></tr></thead><tbody>' + items_html + '</tbody></table>' if items_html else ''}
         </div>'''
 
     # ── ERD SVG ──
@@ -427,19 +606,30 @@ body{{font-family:"맑은 고딕","Noto Sans KR",Arial,sans-serif;background:#f1
 .api-path{{font-family:monospace;font-size:13px;font-weight:600;color:#1e293b}}
 .api-func{{font-size:11px;color:#64748b;margin-left:auto}}
 .api-params{{display:flex;flex-wrap:wrap;gap:4px}}
-/* 클래스 */
-.cls-grid{{display:flex;flex-wrap:wrap;gap:12px}}
-.cls-card{{border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;width:200px;flex-shrink:0}}
-.cls-head{{padding:10px 12px;border-bottom:1px solid #e2e8f0}}
-.cls-anns{{font-size:10px;color:#7c3aed;margin-bottom:2px}}
-.cls-ann{{margin-right:4px}}
-.cls-name{{font-size:13px;font-weight:700;color:#1e293b}}
-.cls-pkg{{font-size:10px;color:#64748b;margin-top:1px}}
-.cls-rel{{font-size:10px;color:#2563eb;margin-top:2px}}
-.cls-body{{padding:8px 12px;background:white}}
-.cls-field{{font-size:11px;font-family:monospace;color:#475569;padding:1px 0}}
-.cls-method{{font-size:11px;font-family:monospace;color:#1d4ed8;padding:1px 0}}
-.cls-divider{{border-top:1px solid #f1f5f9;margin:4px 0}}
+/* 클래스설계서 */
+.cls-domain-block{{background:white;border:1px solid #e2e8f0;border-radius:10px;margin-bottom:28px;overflow:hidden}}
+.cls-domain-title{{background:linear-gradient(90deg,#1e3a5f,#2563eb);color:white;padding:10px 18px;font-size:14px;font-weight:700;letter-spacing:.3px}}
+.cls-subsec-label{{background:#f1f5f9;color:#1e3a5f;font-weight:700;font-size:12px;padding:7px 16px;border-bottom:1px solid #e2e8f0;border-top:1px solid #e2e8f0}}
+.cls-comp-tbl{{width:100%;border-collapse:collapse;font-size:12px}}
+.cls-comp-tbl th{{background:#334155;color:white;padding:7px 12px;text-align:left;font-size:11px}}
+.cls-comp-tbl td{{padding:7px 12px;border-bottom:1px solid #f1f5f9}}
+.cls-comp-tbl tr:hover td{{background:#f8fafc}}
+.cls-detail-block{{border-top:1px solid #e2e8f0;padding:14px 16px 16px}}
+.cls-detail-meta{{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:10px}}
+.cls-detail-meta td{{padding:5px 10px;border:1px solid #e2e8f0}}
+.cls-subsec-title{{font-size:11px;font-weight:700;color:#475569;background:#f8fafc;padding:4px 10px;border-left:3px solid #6366f1;margin-bottom:0}}
+.cls-var-tbl{{width:100%;border-collapse:collapse;font-size:12px}}
+.cls-var-tbl th{{background:#475569;color:white;padding:6px 10px;text-align:left;font-size:11px}}
+.cls-var-tbl td{{padding:6px 10px;border-bottom:1px solid #f1f5f9;vertical-align:top}}
+.cls-var-tbl tr:nth-child(even) td{{background:#f8fafc}}
+.cls-var-tbl tr:hover td{{background:#eff6ff}}
+/* 인터페이스설계서 */
+.if-list-tbl{{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:24px}}
+.if-list-tbl th{{background:#1e3a5f;color:white;padding:8px 12px;text-align:left;font-size:11px}}
+.if-list-tbl td{{padding:8px 12px;border-bottom:1px solid #e2e8f0}}
+.if-list-tbl tr:hover td{{background:#f0f9ff}}
+.if-detail-block{{background:white;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:16px;overflow:hidden}}
+.if-detail-title{{background:linear-gradient(90deg,#0f766e,#0d9488);color:white;padding:9px 16px;font-size:13px;font-weight:700}}
 /* AI */
 .ai-box{{background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:18px;margin-bottom:20px}}
 .ai-title{{font-size:14px;font-weight:700;color:#15803d;margin-bottom:10px}}
@@ -461,7 +651,8 @@ body{{font-family:"맑은 고딕","Noto Sans KR",Arial,sans-serif;background:#f1
   <button class="nav-btn" onclick="show('erd',this)">ERD ({len(tables)})</button>
   <button class="nav-btn" onclick="show('tables',this)">테이블 정의서 ({len(tables)})</button>
   <button class="nav-btn" onclick="show('apis',this)">API 명세서 ({len(apis)})</button>
-  <button class="nav-btn" onclick="show('classes',this)">클래스 다이어그램 ({len(classes)})</button>
+  <button class="nav-btn" onclick="show('classes',this)">클래스설계서 ({len(classes)})</button>
+  <button class="nav-btn" onclick="show('interfaces',this)">인터페이스설계서 ({len(ifaces)})</button>
 </div>
 <div class="body">
 
@@ -506,9 +697,23 @@ body{{font-family:"맑은 고딕","Noto Sans KR",Arial,sans-serif;background:#f1
 </div>
 
 <div id="classes" class="section">
-  <div class="sec-title">🧩 클래스 다이어그램</div>
-  <div class="sec-sub">작성일: {date_str} | 총 {len(classes)}개 클래스</div>
-  <div class="cls-grid">{cls_cards}</div>
+  <div class="sec-title">🧩 클래스설계서</div>
+  <div class="sec-sub">작성일: {date_str} | 총 {len(classes)}개 클래스 / {len(cls_groups)}개 도메인 그룹</div>
+  {cls_design_sections or '<div style="color:#94a3b8;padding:40px;text-align:center;background:white;border-radius:10px">Java 클래스 파일을 찾지 못했습니다</div>'}
+</div>
+
+<div id="interfaces" class="section">
+  <div class="sec-title">🔌 인터페이스설계서</div>
+  <div class="sec-sub">작성일: {date_str} | 총 {len(ifaces)}개 인터페이스</div>
+  {f'''<div class="tbl-block">
+    <div class="cls-domain-title">인터페이스 목록</div>
+    <table class="if-list-tbl">
+      <thead><tr><th style="width:80px">IF No.</th><th>인터페이스명</th><th style="width:150px">시스템 ID</th><th style="width:100px">유형</th><th style="width:90px">IF방식</th><th>소스</th></tr></thead>
+      <tbody>{if_list_rows}</tbody>
+    </table>
+  </div>
+  <div class="sec-title" style="margin-top:24px">인터페이스 상세</div>
+  {if_detail_sections}''' if ifaces else '<div style="color:#94a3b8;padding:40px;text-align:center;background:white;border-radius:10px">@FeignClient, RestTemplate, 외부 URL 설정을 찾지 못했습니다</div>'}
 </div>
 
 </div>
@@ -534,7 +739,7 @@ METHOD_COLOR = {'GET':'#059669','POST':'#2563eb','PUT':'#d97706',
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('설계 문서 자동 생성 도구 v2')
+        self.title('설계 문서 자동 생성 도구 v3')
         self.geometry('700x700')
         self.resizable(True, True)
         self.configure(bg='#f1f5f9')
@@ -544,9 +749,9 @@ class App(tk.Tk):
     def _build(self):
         hdr = tk.Frame(self, bg='#1e3a5f', height=62)
         hdr.pack(fill='x')
-        tk.Label(hdr, text='📐  설계 문서 자동 생성 도구 v2', bg='#1e3a5f', fg='white',
+        tk.Label(hdr, text='📐  설계 문서 자동 생성 도구 v3', bg='#1e3a5f', fg='white',
                  font=('맑은 고딕',13,'bold')).pack(side='left', padx=20, pady=16)
-        tk.Label(hdr, text='ERD · 테이블정의서 · API명세서 · 클래스다이어그램',
+        tk.Label(hdr, text='ERD · 테이블정의서 · API명세서 · 클래스설계서 · 인터페이스설계서',
                  bg='#1e3a5f', fg='#93c5fd', font=('맑은 고딕',9)).pack(side='left', pady=16)
 
         body = tk.Frame(self, bg='#f1f5f9', padx=24, pady=18)
@@ -572,7 +777,7 @@ class App(tk.Tk):
         opt = tk.Frame(body, bg='#f1f5f9'); opt.pack(fill='x', pady=(4,14))
         self._ce = tk.BooleanVar(value=True); self._ct = tk.BooleanVar(value=True)
         self._ca = tk.BooleanVar(value=True); self._cc = tk.BooleanVar(value=True)
-        for t, v in [('ERD',self._ce),('테이블 정의서',self._ct),('API 명세서',self._ca),('클래스 다이어그램',self._cc)]:
+        for t, v in [('ERD',self._ce),('테이블 정의서',self._ct),('API 명세서',self._ca),('클래스설계서',self._cc)]:
             tk.Checkbutton(opt, text=t, variable=v, bg='#f1f5f9',
                           font=('맑은 고딕',10), cursor='hand2').pack(side='left', padx=(0,14))
 
@@ -670,7 +875,7 @@ class App(tk.Tk):
                 self._log('[5/5] API 키 없음 — 규칙 기반으로만 생성', 'warn')
 
             self._log('리포트 생성 중...', 'info')
-            generate_report(tables, apis, classes, ai_result, str(src), plan, str(out_file))
+            generate_report(tables, apis, classes, ai_result, str(src), plan, str(out_file), files=files)
             self._log(f'✅ 완료! → {out_file}', 'ok')
 
             import webbrowser
