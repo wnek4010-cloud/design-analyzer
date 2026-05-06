@@ -775,7 +775,7 @@ def call_gemini_api(api_key, tables, apis, classes, plan_text=''):
         ]
     }).encode('utf-8')
     url = ('https://generativelanguage.googleapis.com/v1beta'
-           '/models/gemini-2.5-flash:generateContent?key=' + api_key)
+           '/models/gemini-2.5-flash:generateContent?key=' + (api_key or '').strip())
 
     # 503/429은 1회만 재시도 후 빠르게 폴백 (구글 과부하는 분 단위라 길게 기다려도 의미 없음)
     # 그 외 일시 오류는 최대 3회 재시도
@@ -842,6 +842,10 @@ def call_groq_api(api_key, tables, apis, classes, plan_text=''):
         + '5. 설계 보완 필요 항목'
     )
     try:
+        api_key = (api_key or '').strip()  # 앞뒤 공백/줄바꿈 제거
+        # 디버깅: 키 길이와 앞/뒤 일부 확인 (전체는 절대 노출 안 함)
+        key_preview = (api_key[:7] + '...' + api_key[-4:]) if len(api_key) > 12 else '(짧거나 비어있음)'
+        key_len = len(api_key)
         payload = json.dumps({
             'model': 'llama-3.3-70b-versatile',
             'messages': [{'role': 'user', 'content': prompt}],
@@ -858,6 +862,14 @@ def call_groq_api(api_key, tables, apis, classes, plan_text=''):
         with urllib.request.urlopen(req, timeout=60) as resp:
             data = json.loads(resp.read())
             return data['choices'][0]['message']['content']
+    except urllib.error.HTTPError as e:
+        # 응답 본문까지 읽어서 진짜 원인 노출 (403/401 디버깅용)
+        try:
+            err_body = e.read().decode('utf-8', errors='ignore')[:400]
+        except:
+            err_body = ''
+        return ('Groq API 오류: HTTP ' + str(e.code) + ' ' + (e.reason or '') +
+                ' [키: ' + key_preview + ', 길이: ' + str(key_len) + ']\n' + err_body)
     except Exception as e:
         return 'Groq API 오류: ' + str(e)
 
@@ -972,7 +984,16 @@ class App(tk.Tk):
                  font=('맑은 고딕',10,'bold')).pack(anchor='w', pady=(0,2))
 
     def _config_path(self):
-        return Path(__file__).parent / 'config.json'
+        # PyInstaller EXE로 실행된 경우: __file__은 임시폴더 _MEIxxxxx를 가리킴
+        # → EXE 본체(sys.executable) 옆에 저장해야 영구 보존됨
+        import sys
+        if getattr(sys, 'frozen', False):
+            # EXE 모드 - EXE 파일이 있는 폴더
+            base = Path(sys.executable).parent
+        else:
+            # 일반 .py 실행 모드
+            base = Path(__file__).parent
+        return base / 'config.json'
 
     def _load_config(self):
         try:
@@ -983,11 +1004,15 @@ class App(tk.Tk):
 
     def _save_config(self):
         try:
+            path = self._config_path()
             cfg = {'gemini_key': self._ak.get(), 'groq_key': self._gk.get()}
-            self._config_path().write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding='utf-8')
-            messagebox.showinfo('저장 완료', 'API 키가 저장됐어요!\n다음 실행시 자동으로 입력됩니다.')
+            path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding='utf-8')
+            messagebox.showinfo('저장 완료',
+                'API 키가 저장됐습니다.\n\n저장 위치:\n' + str(path) +
+                '\n\n다음 실행시 자동으로 입력됩니다.')
         except Exception as e:
-            messagebox.showerror('저장 실패', str(e))
+            messagebox.showerror('저장 실패',
+                '저장 위치: ' + str(self._config_path()) + '\n\n오류: ' + str(e))
 
     def _row(self, p, label, var, cmd, color):
         self._label(p, label)
@@ -1024,6 +1049,10 @@ class App(tk.Tk):
             out_file = out_dir / f'design_doc_{datetime.now().strftime("%Y%m%d_%H%M%S")}.html'
 
             self._log(f'소스: {src}', 'info')
+            # 디버깅: config.json 경로와 키 입력 상태 확인
+            self._log(f'설정 파일 경로: {self._config_path()}', 'info')
+            self._log(f'Gemini 키: ' + (f'입력됨 ({len(api_key)}자, {api_key[:6]}...)' if api_key else '미입력'), 'info')
+            self._log(f'Groq 키:   ' + (f'입력됨 ({len(groq_key)}자, {groq_key[:6]}...)' if groq_key else '미입력'), 'info')
             self._log('[1/5] 파일 수집 중...', 'info')
             files = collect_files(src)
             self._log(f'      → {len(files)}개 파일', 'ok')
