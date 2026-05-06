@@ -285,10 +285,10 @@ def extract_interfaces(files, src_dir):
 # ── AI 보완 ──────────────────────────────────────────────
 def call_claude_api(api_key, tables, apis, classes, plan_text=''):
     try:
-        tbl_names = list(tables.keys())[:15]
-        api_sample = [a['method']+' '+a['path'] for a in apis[:8]]
-        cls_names = [c['name'] for c in classes[:15]]
-        plan_part = ('기획서 내용:\n' + plan_text[:3000]) if plan_text else ''
+        tbl_names = list(tables.keys())[:10]  # 너무 많으면 API 오류
+        api_sample = [a['method']+' '+a['path'] for a in apis[:6]]  # 제한
+        cls_names = [c['name'] for c in classes[:10]]  # 제한
+        plan_part = ('기획서 내용:\n' + plan_text[:2000]) if plan_text else ''
         prompt = (
             '아래는 Java 프로젝트 소스코드 분석 결과입니다.\n'
             + plan_part + '\n\n'
@@ -746,10 +746,10 @@ METHOD_COLOR = {'GET':'#059669','POST':'#2563eb','PUT':'#d97706',
 def call_gemini_api(api_key, tables, apis, classes, plan_text=''):
     try:
         import json, urllib.request
-        tbl_names = list(tables.keys())[:15]
-        api_sample = [a['method']+' '+a['path'] for a in apis[:8]]
-        cls_names = [c['name'] for c in classes[:15]]
-        plan_part = ('기획서 내용:\n' + plan_text[:3000]) if plan_text else ''
+        tbl_names = list(tables.keys())[:10]  # 너무 많으면 API 오류
+        api_sample = [a['method']+' '+a['path'] for a in apis[:6]]  # 제한
+        cls_names = [c['name'] for c in classes[:10]]  # 제한
+        plan_part = ('기획서 내용:\n' + plan_text[:2000]) if plan_text else ''
         prompt = (
             '아래는 Java 프로젝트 소스코드 분석 결과와 기획서입니다.\n'
             + plan_part + '\n\n'
@@ -765,17 +765,25 @@ def call_gemini_api(api_key, tables, apis, classes, plan_text=''):
             + '4. 신규 개발 필요 API 목록\n'
             + '5. 설계 보완 필요 항목'
         )
+        # gemini-2.5-flash는 thinkingConfig 필요
         payload = json.dumps({
-            'contents': [{'parts': [{'text': prompt}]}],
-            'generationConfig': {'maxOutputTokens': 2048}
+            'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
+            'generationConfig': {
+                'maxOutputTokens': 2048,
+                'temperature': 0.7
+            }
         }).encode('utf-8')
+        # gemini-2.0-flash 사용 (더 안정적)
         url = ('https://generativelanguage.googleapis.com/v1beta'
-               '/models/gemini-2.5-flash:generateContent?key=' + api_key)
+               '/models/gemini-2.0-flash:generateContent?key=' + api_key)
         req = urllib.request.Request(url, data=payload,
             headers={'Content-Type': 'application/json'}, method='POST')
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=120) as resp:
             data = json.loads(resp.read())
             return data['candidates'][0]['content']['parts'][0]['text']
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode('utf-8', errors='ignore')
+        return 'Gemini API 오류: ' + str(e) + '\n' + err_body[:200]
     except Exception as e:
         return 'Gemini API 오류: ' + str(e)
 
@@ -931,10 +939,10 @@ class App(tk.Tk):
             import subprocess
             # 결과 폴더만 열기 (브라우저 자동 실행 없음)
             try:
-                subprocess.Popen(f'explorer /select,"{out_file}"')
+                subprocess.Popen(['explorer', '/select,', str(out_file)])
             except: pass
             messagebox.showinfo('완료',
-                f'설계 문서 생성 완료!\n\n저장 위치:\n{out_file}\n\n파일을 더블클릭하면 브라우저에서 열립니다.')
+                '설계 문서 생성 완료!\n\n저장 위치:\n' + str(out_file) + '\n\n파일을 더블클릭하면 브라우저에서 열립니다.')
 
         except Exception as e:
             import traceback
