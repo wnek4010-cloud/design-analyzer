@@ -1,0 +1,29 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install pyinstaller
+      - run: pyinstaller --onefile --windowed --name "DesignAnalyzer" analyzer_gui.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DesignAnalyzer-Windows
+          path: dist/DesignAnalyzer.exe
+          retention-days: 30
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: "DesignAnalyzer v${{ github.run_number }}"
+          files: dist/DesignAnalyzer.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
