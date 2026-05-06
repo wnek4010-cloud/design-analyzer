@@ -744,54 +744,62 @@ METHOD_COLOR = {'GET':'#059669','POST':'#2563eb','PUT':'#d97706',
 
 # ── Gemini API 호출 ──────────────────────────────────────
 def call_gemini_api(api_key, tables, apis, classes, plan_text=''):
-    try:
-        import json, urllib.request
-        tbl_names = list(tables.keys())[:10]  # 너무 많으면 API 오류
-        api_sample = [a['method']+' '+a['path'] for a in apis[:6]]  # 제한
-        cls_names = [c['name'] for c in classes[:10]]  # 제한
-        plan_part = ('기획서 내용:\n' + plan_text[:2000]) if plan_text else ''
-        prompt = (
-            '아래는 Java 프로젝트 소스코드 분석 결과와 기획서입니다.\n'
-            + plan_part + '\n\n'
-            + '현재 소스 분석 결과:\n'
-            + '- 기존 테이블: ' + str(tbl_names) + '\n'
-            + '- API 수: ' + str(len(apis)) + '개\n'
-            + '- API 샘플: ' + str(api_sample) + '\n'
-            + '- 주요 클래스: ' + str(cls_names) + '\n\n'
-            + '다음 항목을 한국어로 작성해주세요:\n'
-            + '1. 시스템 전체 구조 요약 (3줄)\n'
-            + '2. 기획서 기반 신규 추가 필요 테이블 목록 및 설명\n'
-            + '3. 기존 테이블 중 변경 필요한 항목 (컬럼 추가/수정)\n'
-            + '4. 신규 개발 필요 API 목록\n'
-            + '5. 설계 보완 필요 항목'
-        )
-        # gemini-2.5-flash는 thinkingConfig 필요
-        payload = json.dumps({
-            'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
-            'generationConfig': {
-                'maxOutputTokens': 2048,
-                'temperature': 0.7
-            },
-            'safetySettings': [
-                {'category': 'HARM_CATEGORY_HARASSMENT', 'threshold': 'BLOCK_NONE'},
-                {'category': 'HARM_CATEGORY_HATE_SPEECH', 'threshold': 'BLOCK_NONE'},
-                {'category': 'HARM_CATEGORY_SEXUALLY_EXPLICIT', 'threshold': 'BLOCK_NONE'},
-                {'category': 'HARM_CATEGORY_DANGEROUS_CONTENT', 'threshold': 'BLOCK_NONE'}
-            ]
-        }).encode('utf-8')
-        # gemini-2.0-flash 사용 (더 안정적)
-        url = ('https://generativelanguage.googleapis.com/v1beta'
-               '/models/gemini-2.5-flash:generateContent?key=' + api_key)
-        req = urllib.request.Request(url, data=payload,
-            headers={'Content-Type': 'application/json'}, method='POST')
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read())
-            return data['candidates'][0]['content']['parts'][0]['text']
-    except urllib.error.HTTPError as e:
-        err_body = e.read().decode('utf-8', errors='ignore')
-        return 'Gemini API 오류: ' + str(e) + '\n' + err_body[:200]
-    except Exception as e:
-        return 'Gemini API 오류: ' + str(e)
+    import time, json, urllib.request, urllib.error
+    tbl_names = list(tables.keys())[:10]
+    api_sample = [a['method']+' '+a['path'] for a in apis[:6]]
+    cls_names = [c['name'] for c in classes[:10]]
+    plan_part = ('기획서 내용:\n' + plan_text[:2000]) if plan_text else ''
+    prompt = (
+        '아래는 Java 프로젝트 소스코드 분석 결과와 기획서입니다.\n'
+        + plan_part + '\n\n'
+        + '현재 소스 분석 결과:\n'
+        + '- 기존 테이블: ' + str(tbl_names) + '\n'
+        + '- API 수: ' + str(len(apis)) + '개\n'
+        + '- API 샘플: ' + str(api_sample) + '\n'
+        + '- 주요 클래스: ' + str(cls_names) + '\n\n'
+        + '다음 항목을 한국어로 작성해주세요:\n'
+        + '1. 시스템 전체 구조 요약 (3줄)\n'
+        + '2. 기획서 기반 신규 추가 필요 테이블 목록 및 설명\n'
+        + '3. 기존 테이블 중 변경 필요한 항목 (컬럼 추가/수정)\n'
+        + '4. 신규 개발 필요 API 목록\n'
+        + '5. 설계 보완 필요 항목'
+    )
+    payload = json.dumps({
+        'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
+        'generationConfig': {'maxOutputTokens': 2048, 'temperature': 0.7},
+        'safetySettings': [
+            {'category': 'HARM_CATEGORY_HARASSMENT', 'threshold': 'BLOCK_NONE'},
+            {'category': 'HARM_CATEGORY_HATE_SPEECH', 'threshold': 'BLOCK_NONE'},
+            {'category': 'HARM_CATEGORY_SEXUALLY_EXPLICIT', 'threshold': 'BLOCK_NONE'},
+            {'category': 'HARM_CATEGORY_DANGEROUS_CONTENT', 'threshold': 'BLOCK_NONE'}
+        ]
+    }).encode('utf-8')
+    url = ('https://generativelanguage.googleapis.com/v1beta'
+           '/models/gemini-2.5-flash:generateContent?key=' + api_key)
+
+    # 최대 3번 자동 재시도 (503/429 대응)
+    last_error = ''
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(url, data=payload,
+                headers={'Content-Type': 'application/json'}, method='POST')
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                data = json.loads(resp.read())
+                return data['candidates'][0]['content']['parts'][0]['text']
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode('utf-8', errors='ignore')
+            last_error = str(e) + '\n' + err_body[:300]
+            if e.code in (503, 429, 500):
+                wait = (attempt + 1) * 5
+                time.sleep(wait)
+                continue
+            return 'Gemini API 오류: ' + last_error
+        except Exception as e:
+            last_error = str(e)
+            time.sleep(5)
+            continue
+    return 'Gemini API 오류 (3회 재시도 실패): ' + last_error
+
 
 def call_ai_api(api_key, tables, apis, classes, plan_text=''):
     if not api_key:
@@ -937,9 +945,34 @@ class App(tk.Tk):
                         plan_text = '\n'.join(p.text)
                     except: pass
                 ai_result = call_ai_api(api_key, tables, apis, classes, plan_text)
-                self._log('      → AI 분석 완료', 'ok')
+
+                # AI 실패 여부 확인
+                if ai_result.startswith('Gemini API 오류') or ai_result.startswith('AI 분석 실패') or 'Error' in ai_result[:30]:
+                    self._log('      → AI 분석 실패: ' + ai_result[:80], 'err')
+                    # 사용자에게 계속할지 물어보기
+                    import queue as _queue
+                    _q = _queue.Queue()
+                    def _ask():
+                        ans = messagebox.askyesno(
+                            'AI 분석 실패',
+                            'AI 분석에 실패했습니다.\n\n오류 내용:\n' + ai_result[:120] + '\n\n'
+                            'AI 분석 없이 나머지 산출물\n(테이블정의서/API명세서/클래스)만 저장할까요?'
+                        )
+                        _q.put(ans)
+                    self.after(0, _ask)
+                    try:
+                        proceed = _q.get(timeout=30)
+                    except:
+                        proceed = False
+                    if not proceed:
+                        self._log('취소됨 — 파일 저장하지 않음', 'warn')
+                        return
+                    ai_result = ''  # AI 없이 진행
+                    self._log('      → AI 없이 저장 진행', 'warn')
+                else:
+                    self._log('      → AI 분석 완료 ✓', 'ok')
             else:
-                self._log('[5/5] API 키 없음 — 규칙 기반으로만 생성 (Gemini/Claude 키 입력시 AI 분석 추가)', 'warn')
+                self._log('[5/5] API 키 없음 — 규칙 기반으로만 생성', 'warn')
 
             self._log('리포트 생성 중...', 'info')
             generate_report(tables, apis, classes, ai_result, str(src), plan, str(out_file), files=files)
