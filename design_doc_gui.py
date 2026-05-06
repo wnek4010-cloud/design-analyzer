@@ -561,6 +561,19 @@ def generate_report(tables, apis, classes, ai_result, src_dir, plan_file, output
           <div class="ai-body">{ai_result}</div>
         </div>'''
 
+    ifaces_section_html = (
+        '<div class="tbl-block">'
+        '<div class="cls-domain-title">인터페이스 목록</div>'
+        '<table class="if-list-tbl">'
+        '<thead><tr><th style="width:80px">IF No.</th><th>인터페이스명</th>'
+        '<th style="width:150px">시스템 ID</th><th style="width:100px">유형</th>'
+        '<th style="width:90px">IF방식</th><th>소스</th></tr></thead>'
+        '<tbody>' + if_list_rows + '</tbody>'
+        '</table></div>'
+        '<div class="sec-title" style="margin-top:24px">인터페이스 상세</div>'
+        + if_detail_sections
+    ) if ifaces else '<div style="color:#94a3b8;padding:40px;text-align:center">인터페이스 정보를 찾지 못했습니다</div>'
+
     html = f'''<!DOCTYPE html>
 <html lang="ko"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -705,15 +718,7 @@ body{{font-family:"맑은 고딕","Noto Sans KR",Arial,sans-serif;background:#f1
 <div id="interfaces" class="section">
   <div class="sec-title">🔌 인터페이스설계서</div>
   <div class="sec-sub">작성일: {date_str} | 총 {len(ifaces)}개 인터페이스</div>
-  {f'''<div class="tbl-block">
-    <div class="cls-domain-title">인터페이스 목록</div>
-    <table class="if-list-tbl">
-      <thead><tr><th style="width:80px">IF No.</th><th>인터페이스명</th><th style="width:150px">시스템 ID</th><th style="width:100px">유형</th><th style="width:90px">IF방식</th><th>소스</th></tr></thead>
-      <tbody>{if_list_rows}</tbody>
-    </table>
-  </div>
-  <div class="sec-title" style="margin-top:24px">인터페이스 상세</div>
-  {if_detail_sections}''' if ifaces else '<div style="color:#94a3b8;padding:40px;text-align:center;background:white;border-radius:10px">@FeignClient, RestTemplate, 외부 URL 설정을 찾지 못했습니다</div>'}
+  {ifaces_section_html}
 </div>
 
 </div>
