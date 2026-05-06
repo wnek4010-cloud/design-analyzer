@@ -370,6 +370,41 @@ def generate_erd_svg(tables):
     svg += '</svg>'
     return svg
 
+# ── AI 응답 텍스트를 HTML 친화적으로 변환 ───────────────
+def _format_ai_text(text):
+    """LLM 응답의 마크다운 잔재를 정리하고 섹션 헤더는 강조 처리"""
+    if not text:
+        return ''
+    import html as _html
+    out_lines = []
+    for raw in text.split('\n'):
+        line = raw.rstrip()
+        # --- 또는 *** 같은 구분선 제거
+        if re.match(r'^\s*[-*=_]{3,}\s*$', line):
+            out_lines.append('<hr style="border:none;border-top:1px dashed #86efac;margin:10px 0">')
+            continue
+        # 마크다운 헤더 (#, ##, ###) → 강조 div로
+        m = re.match(r'^\s*(#{1,6})\s+(.+)$', line)
+        if m:
+            level = len(m.group(1))
+            content = m.group(2)
+            size = max(13, 18 - level)
+            out_lines.append(f'<div style="font-weight:700;color:#15803d;font-size:{size}px;margin:14px 0 6px">{_html.escape(content)}</div>')
+            continue
+        # [1] [2] 형식의 우리 프롬프트 섹션 헤더 강조
+        m2 = re.match(r'^\s*(\[\d+\])\s+(.+)$', line)
+        if m2:
+            out_lines.append(f'<div style="font-weight:700;color:#15803d;font-size:14px;margin:14px 0 6px;border-left:3px solid #22c55e;padding-left:10px">{_html.escape(m2.group(1))} {_html.escape(m2.group(2))}</div>')
+            continue
+        # 일반 라인: HTML 이스케이프 후 ** 굵게, * 강조 처리
+        escaped = _html.escape(line)
+        escaped = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', escaped)
+        escaped = re.sub(r'(?<!\*)\*([^*\n]+)\*(?!\*)', r'<i>\1</i>', escaped)
+        # 백틱 코드 → mono
+        escaped = re.sub(r'`([^`]+)`', r'<code style="background:#dcfce7;padding:1px 5px;border-radius:3px;font-family:Consolas,monospace">\1</code>', escaped)
+        out_lines.append(escaped if escaped else '&nbsp;')
+    return '<br>'.join(out_lines)
+
 # ── HTML 리포트 생성 (실제 설계서 형식) ──────────────────
 def generate_report(tables, apis, classes, ai_result, src_dir, plan_file, output_path, files=None):
     now = datetime.now().strftime('%Y-%m-%d %H:%M')
@@ -558,7 +593,7 @@ def generate_report(tables, apis, classes, ai_result, src_dir, plan_file, output
     if ai_result:
         ai_html = f'''<div class="ai-box">
           <div class="ai-title">🤖 AI 분석 보완</div>
-          <div class="ai-body">{ai_result}</div>
+          <div class="ai-body">{_format_ai_text(ai_result)}</div>
         </div>'''
 
     ifaces_section_html = (
@@ -646,7 +681,7 @@ body{{font-family:"맑은 고딕","Noto Sans KR",Arial,sans-serif;background:#f1
 /* AI */
 .ai-box{{background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:18px;margin-bottom:20px}}
 .ai-title{{font-size:14px;font-weight:700;color:#15803d;margin-bottom:10px}}
-.ai-body{{font-size:12px;color:#166534;line-height:1.8;white-space:pre-wrap}}
+.ai-body{{font-size:12px;color:#166534;line-height:1.8}}
 /* ERD */
 .erd-wrap{{background:white;border:1px solid #e2e8f0;border-radius:10px;padding:20px;overflow-x:auto}}
 /* 푸터 */
@@ -743,30 +778,80 @@ METHOD_COLOR = {'GET':'#059669','POST':'#2563eb','PUT':'#d97706',
 
 
 # ── Gemini API 호출 ──────────────────────────────────────
+def _build_design_prompt(tables, apis, classes, plan_text=''):
+    """AS-IS 분석 + TO-BE 설계를 위한 풍부한 프롬프트 생성"""
+    # 테이블: 이름과 컬럼 수까지 포함, 최대 50개
+    tbl_lines = []
+    for name, info in list(tables.items())[:50]:
+        col_count = len(info.get('columns', []))
+        src = info.get('source', '')[-50:] if info.get('source') else ''
+        tbl_lines.append(f'  - {name} (컬럼 {col_count}개) [{src}]')
+    tbl_block = '\n'.join(tbl_lines) if tbl_lines else '  (없음)'
+    if len(tables) > 50:
+        tbl_block += f'\n  ... 외 {len(tables)-50}개'
+
+    # API: 메소드+경로+함수명, 최대 30개
+    api_lines = []
+    for a in apis[:30]:
+        api_lines.append(f"  - {a.get('method','')} {a.get('path','')} ({a.get('function','')})")
+    api_block = '\n'.join(api_lines) if api_lines else '  (없음)'
+    if len(apis) > 30:
+        api_block += f'\n  ... 외 {len(apis)-30}개'
+
+    # 클래스: 이름 + 도메인 분류 가능하면 함께, 최대 30개
+    cls_lines = []
+    for c in classes[:30]:
+        cls_lines.append(f"  - {c.get('name','')}")
+    cls_block = '\n'.join(cls_lines) if cls_lines else '  (없음)'
+    if len(classes) > 30:
+        cls_block += f'\n  ... 외 {len(classes)-30}개'
+
+    plan_part = ''
+    if plan_text:
+        plan_part = (
+            '【기획서 내용】 (TO-BE 요구사항이 담긴 문서)\n'
+            + plan_text[:6000] + '\n'
+            + ('... (이하 생략)\n' if len(plan_text) > 6000 else '')
+            + '\n'
+        )
+
+    return (
+        '당신은 시니어 시스템 분석가입니다. 아래 자료를 바탕으로 AS-IS 분석과 TO-BE 설계 보완을 수행해주세요.\n\n'
+        + plan_part
+        + f'【AS-IS 소스 분석 결과】\n'
+        + f'■ 기존 테이블 ({len(tables)}개):\n{tbl_block}\n\n'
+        + f'■ 기존 API ({len(apis)}개):\n{api_block}\n\n'
+        + f'■ 주요 클래스 ({len(classes)}개):\n{cls_block}\n\n'
+        + '【작성 요구사항】\n'
+        + '아래 5개 섹션을 한국어로, 충분히 구체적으로 작성해주세요. '
+        + '각 섹션은 반드시 채워주세요. 마크다운 문법(#, ##, ---, **, *)은 절대 사용하지 말고, '
+        + '평문과 들여쓰기만으로 작성하세요. 섹션 제목은 [1], [2] 형식으로 표기하세요.\n\n'
+        + '[1] 시스템 전체 구조 요약\n'
+        + '   - 이 시스템이 무엇을 하는 시스템인지 5~7줄로 설명\n'
+        + '   - 주요 도메인(테이블 그룹) 분류 및 역할\n\n'
+        + '[2] 기획서 기반 신규 추가 필요 테이블\n'
+        + '   - 기획서에서 언급된 기능 중 현재 테이블에 없는 항목 식별\n'
+        + '   - 각 신규 테이블별로: 테이블명(영문) / 한글명 / 용도 / 핵심 컬럼 5~8개 (컬럼명, 타입, 설명)\n'
+        + '   - 최소 3개 이상 제시 (없으면 "필요 없음" 명시)\n\n'
+        + '[3] 기존 테이블 변경 필요 항목\n'
+        + '   - 기획서 요구사항을 충족하기 위해 기존 테이블에 추가/수정해야 할 컬럼\n'
+        + '   - 형식: 테이블명 → 추가 컬럼명(타입): 설명\n\n'
+        + '[4] 신규 개발 필요 API 목록\n'
+        + '   - 기획서 기능을 구현하기 위해 필요한 신규 REST API\n'
+        + '   - 형식: METHOD /api/path - 기능 설명 (요청 파라미터, 응답 데이터)\n'
+        + '   - 최소 5개 이상 제시\n\n'
+        + '[5] 설계 보완 필요 항목 및 위험 요소\n'
+        + '   - AS-IS에서 발견된 설계 문제점, 개선 권고사항\n'
+        + '   - TO-BE 구현 시 주의해야 할 기술적/업무적 위험 요소\n'
+    )
+
+
 def call_gemini_api(api_key, tables, apis, classes, plan_text=''):
     import time, json, urllib.request, urllib.error
-    tbl_names = list(tables.keys())[:10]
-    api_sample = [a['method']+' '+a['path'] for a in apis[:6]]
-    cls_names = [c['name'] for c in classes[:10]]
-    plan_part = ('기획서 내용:\n' + plan_text[:2000]) if plan_text else ''
-    prompt = (
-        '아래는 Java 프로젝트 소스코드 분석 결과와 기획서입니다.\n'
-        + plan_part + '\n\n'
-        + '현재 소스 분석 결과:\n'
-        + '- 기존 테이블: ' + str(tbl_names) + '\n'
-        + '- API 수: ' + str(len(apis)) + '개\n'
-        + '- API 샘플: ' + str(api_sample) + '\n'
-        + '- 주요 클래스: ' + str(cls_names) + '\n\n'
-        + '다음 항목을 한국어로 작성해주세요:\n'
-        + '1. 시스템 전체 구조 요약 (3줄)\n'
-        + '2. 기획서 기반 신규 추가 필요 테이블 목록 및 설명\n'
-        + '3. 기존 테이블 중 변경 필요한 항목 (컬럼 추가/수정)\n'
-        + '4. 신규 개발 필요 API 목록\n'
-        + '5. 설계 보완 필요 항목'
-    )
+    prompt = _build_design_prompt(tables, apis, classes, plan_text)
     payload = json.dumps({
         'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
-        'generationConfig': {'maxOutputTokens': 2048, 'temperature': 0.7},
+        'generationConfig': {'maxOutputTokens': 8192, 'temperature': 0.7},
         'safetySettings': [
             {'category': 'HARM_CATEGORY_HARASSMENT', 'threshold': 'BLOCK_NONE'},
             {'category': 'HARM_CATEGORY_HATE_SPEECH', 'threshold': 'BLOCK_NONE'},
@@ -791,7 +876,14 @@ def call_gemini_api(api_key, tables, apis, classes, plan_text=''):
                 headers={'Content-Type': 'application/json'}, method='POST')
             with urllib.request.urlopen(req, timeout=120) as resp:
                 data = json.loads(resp.read())
-                return data['candidates'][0]['content']['parts'][0]['text']
+                cand = data.get('candidates', [{}])[0]
+                text = cand.get('content', {}).get('parts', [{}])[0].get('text', '')
+                finish = cand.get('finishReason', '')
+                if finish == 'MAX_TOKENS':
+                    text += '\n\n[⚠ 응답이 토큰 한도에 도달하여 잘렸습니다. 더 자세한 내용은 다시 시도해주세요.]'
+                elif finish == 'SAFETY':
+                    return 'Gemini API 오류: 안전 필터에 의해 응답이 차단되었습니다.'
+                return text
         except urllib.error.HTTPError as e:
             err_body = e.read().decode('utf-8', errors='ignore')
             last_error = 'HTTP ' + str(e.code) + ': ' + (e.reason or '') + '\n' + err_body[:300]
@@ -822,25 +914,7 @@ def call_gemini_api(api_key, tables, apis, classes, plan_text=''):
 # ── Groq API 호출 (Gemini 실패시 폴백) ───────────────────
 def call_groq_api(api_key, tables, apis, classes, plan_text=''):
     import json, urllib.request, urllib.error
-    tbl_names = list(tables.keys())[:10]
-    api_sample = [a['method']+' '+a['path'] for a in apis[:6]]
-    cls_names = [c['name'] for c in classes[:10]]
-    plan_part = ('기획서 내용:\n' + plan_text[:2000]) if plan_text else ''
-    prompt = (
-        '아래는 Java 프로젝트 소스코드 분석 결과와 기획서입니다.\n'
-        + plan_part + '\n\n'
-        + '현재 소스 분석 결과:\n'
-        + '- 기존 테이블: ' + str(tbl_names) + '\n'
-        + '- API 수: ' + str(len(apis)) + '개\n'
-        + '- API 샘플: ' + str(api_sample) + '\n'
-        + '- 주요 클래스: ' + str(cls_names) + '\n\n'
-        + '다음 항목을 한국어로 작성해주세요:\n'
-        + '1. 시스템 전체 구조 요약 (3줄)\n'
-        + '2. 기획서 기반 신규 추가 필요 테이블 목록 및 설명\n'
-        + '3. 기존 테이블 중 변경 필요한 항목 (컬럼 추가/수정)\n'
-        + '4. 신규 개발 필요 API 목록\n'
-        + '5. 설계 보완 필요 항목'
-    )
+    prompt = _build_design_prompt(tables, apis, classes, plan_text)
     try:
         api_key = (api_key or '').strip()  # 앞뒤 공백/줄바꿈 제거
         # 디버깅: 키 길이와 앞/뒤 일부 확인 (전체는 절대 노출 안 함)
@@ -849,7 +923,7 @@ def call_groq_api(api_key, tables, apis, classes, plan_text=''):
         payload = json.dumps({
             'model': 'llama-3.3-70b-versatile',
             'messages': [{'role': 'user', 'content': prompt}],
-            'max_tokens': 2048,
+            'max_tokens': 8192,
             'temperature': 0.7
         }).encode('utf-8')
         req = urllib.request.Request(
@@ -861,7 +935,12 @@ def call_groq_api(api_key, tables, apis, classes, plan_text=''):
             }, method='POST')
         with urllib.request.urlopen(req, timeout=60) as resp:
             data = json.loads(resp.read())
-            return data['choices'][0]['message']['content']
+            choice = data.get('choices', [{}])[0]
+            text = choice.get('message', {}).get('content', '')
+            finish = choice.get('finish_reason', '')
+            if finish == 'length':
+                text += '\n\n[⚠ 응답이 토큰 한도에 도달하여 잘렸습니다. 더 자세한 내용은 다시 시도해주세요.]'
+            return text
     except urllib.error.HTTPError as e:
         # 응답 본문까지 읽어서 진짜 원인 노출 (403/401 디버깅용)
         try:
