@@ -872,7 +872,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title('설계 문서 자동 생성 도구 v3')
-        self.geometry('700x700')
+        self.geometry('700x780')
         self.resizable(True, True)
         self.configure(bg='#f1f5f9')
         self.running = False
@@ -900,13 +900,28 @@ class App(tk.Tk):
         self._row(body, '③ 저장 위치', self._ov,
                   lambda: self._ov.set(filedialog.askdirectory() or self._ov.get()), '#64748b')
 
-        self._label(body, '④ API 키 (선택)  Gemini: AIza...  /  Claude: sk-ant...')
+        self._label(body, '④ Gemini API 키 (메인, 선택)')
         self._ak = tk.StringVar()
-        api_entry = tk.Entry(body, textvariable=self._ak, font=('맑은 고딕',10),
-                 relief='solid', bd=1, bg='white', show='*')
-        api_entry.pack(fill='x', ipady=6, pady=(4,10))
-        tk.Label(body, text='Gemini: AIzaSy...  /  Claude: sk-ant...  (없으면 규칙 기반만 생성)',
-                 bg='#f1f5f9', fg='#94a3b8', font=('맑은 고딕',8)).pack(anchor='w', pady=(0,6))
+        tk.Entry(body, textvariable=self._ak, font=('맑은 고딕',10),
+                 relief='solid', bd=1, bg='white', show='*'
+                ).pack(fill='x', ipady=6, pady=(4,4))
+        tk.Label(body, text='AIzaSy... 형식  (Gemini 2.5 Flash 사용)',
+                 bg='#f1f5f9', fg='#94a3b8', font=('맑은 고딕',8)).pack(anchor='w', pady=(0,8))
+
+        self._label(body, '⑤ Groq API 키 (폴백, 선택)')
+        self._gk = tk.StringVar()
+        tk.Entry(body, textvariable=self._gk, font=('맑은 고딕',10),
+                 relief='solid', bd=1, bg='white', show='*'
+                ).pack(fill='x', ipady=6, pady=(4,4))
+        key_btn_row = tk.Frame(body, bg='#f1f5f9'); key_btn_row.pack(fill='x', pady=(0,10))
+        tk.Label(key_btn_row, text='gsk_... 형식  (Gemini 실패시 자동 폴백)',
+                 bg='#f1f5f9', fg='#94a3b8', font=('맑은 고딕',8)).pack(side='left')
+        tk.Button(key_btn_row, text='💾 키 저장', command=self._save_config,
+                  bg='#0ea5e9', fg='white', font=('맑은 고딕',9,'bold'),
+                  relief='flat', padx=10, pady=2, cursor='hand2').pack(side='right')
+
+        # 저장된 키 자동 로드
+        self._load_config()
 
         self._label(body, '⑥ 생성 산출물')
         opt = tk.Frame(body, bg='#f1f5f9'); opt.pack(fill='x', pady=(4,14))
@@ -1005,7 +1020,8 @@ class App(tk.Tk):
                 self._log(f'      → {len(classes)}개 클래스', 'ok')
 
             ai_result = ''
-            if api_key:
+            ai_source = 'none'
+            if api_key or groq_key:
                 self._log('[5/5] AI 분석 보완 중...', 'info')
                 plan_text = ''
                 if plan:
@@ -1023,7 +1039,6 @@ class App(tk.Tk):
                         p.feed(Path(plan).read_text(encoding='utf-8',errors='ignore'))
                         plan_text = '\n'.join(p.text)
                     except: pass
-                    groq_key = self._gk.get().strip()
                 ai_result, ai_source = call_ai_api(api_key, groq_key, tables, apis, classes, plan_text)
 
                 # AI 실패 여부 확인
