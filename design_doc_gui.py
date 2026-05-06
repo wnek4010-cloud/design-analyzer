@@ -827,9 +827,12 @@ class App(tk.Tk):
                   lambda: self._ov.set(filedialog.askdirectory() or self._ov.get()), '#64748b')
 
         self._label(body, '④ API 키 (선택)  Gemini: AIza...  /  Claude: sk-ant...')
-        self._ak = tk.StringVar(value='AIzaSyDn9UPGRAMw-n3UdfeljJ2dSbBx8v00jn8')
-        tk.Entry(body, textvariable=self._ak, font=('맑은 고딕',10),
-                 relief='solid', bd=1, bg='white', show='*').pack(fill='x', ipady=6, pady=(4,10))
+        self._ak = tk.StringVar()
+        api_entry = tk.Entry(body, textvariable=self._ak, font=('맑은 고딕',10),
+                 relief='solid', bd=1, bg='white', show='*')
+        api_entry.pack(fill='x', ipady=6, pady=(4,10))
+        tk.Label(body, text='Gemini: AIzaSy...  /  Claude: sk-ant...  (없으면 규칙 기반만 생성)',
+                 bg='#f1f5f9', fg='#94a3b8', font=('맑은 고딕',8)).pack(anchor='w', pady=(0,6))
 
         self._label(body, '⑤ 생성 산출물')
         opt = tk.Frame(body, bg='#f1f5f9'); opt.pack(fill='x', pady=(4,14))
