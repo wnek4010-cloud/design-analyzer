@@ -14,16 +14,36 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install pyinstaller
-      - run: pyinstaller --onefile --windowed --name "DesignAnalyzer" analyzer_gui.py
+
+      - name: 분석 도구 빌드
+        run: pyinstaller --onefile --windowed --name "설계분석도구" analyzer_gui.py
+
+      - name: 설계문서 도구 빌드
+        run: pyinstaller --onefile --windowed --name "설계문서생성도구" design_doc_gui.py
+
       - uses: actions/upload-artifact@v4
         with:
-          name: DesignAnalyzer-Windows
-          path: dist/DesignAnalyzer.exe
+          name: Windows-EXE
+          path: |
+            dist/설계분석도구.exe
+            dist/설계문서생성도구.exe
           retention-days: 30
+
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: "DesignAnalyzer v${{ github.run_number }}"
-          files: dist/DesignAnalyzer.exe
+          name: "Design Tools v${{ github.run_number }}"
+          body: |
+            ## 설계 도구 모음
+
+            ### 포함 파일
+            - `설계분석도구.exe` — 소스 분석 + URL/하드코딩 탐지
+            - `설계문서생성도구.exe` — ERD·테이블정의서·API명세서·클래스다이어그램 자동 생성
+
+            ### 사용법
+            EXE 파일 더블클릭 → 소스 폴더 선택 → 시작
+          files: |
+            dist/설계분석도구.exe
+            dist/설계문서생성도구.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
