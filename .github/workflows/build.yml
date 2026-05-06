@@ -31,21 +31,4 @@ jobs:
           path: |
             dist/설계분석도구.exe
             dist/설계문서생성도구.exe
-          retention-days: 30
-
-      - name: Release 생성
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ github.run_number }}
-          name: "Design Tools v${{ github.run_number }}"
-          overwrite_files: true
-          body: |
-            ## 설계 도구 모음
-            - 설계분석도구.exe
-            - 설계문서생성도구.exe
-          files: |
-            dist/설계분석도구.exe
-            dist/설계문서생성도구.exe
-          fail_on_unmatched_files: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          retention-days: 90
