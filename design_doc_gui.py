@@ -770,7 +770,7 @@ def call_gemini_api(api_key, tables, apis, classes, plan_text=''):
             'generationConfig': {'maxOutputTokens': 2048}
         }).encode('utf-8')
         url = ('https://generativelanguage.googleapis.com/v1beta'
-               '/models/gemini-1.5-flash:generateContent?key=' + api_key)
+               '/models/gemini-2.5-flash:generateContent?key=' + api_key)
         req = urllib.request.Request(url, data=payload,
             headers={'Content-Type': 'application/json'}, method='POST')
         with urllib.request.urlopen(req, timeout=60) as resp:
@@ -819,7 +819,7 @@ class App(tk.Tk):
                   lambda: self._ov.set(filedialog.askdirectory() or self._ov.get()), '#64748b')
 
         self._label(body, '④ API 키 (선택)  Gemini: AIza...  /  Claude: sk-ant...')
-        self._ak = tk.StringVar()
+        self._ak = tk.StringVar(value='AIzaSyDn9UPGRAMw-n3UdfeljJ2dSbBx8v00jn8')
         tk.Entry(body, textvariable=self._ak, font=('맑은 고딕',10),
                  relief='solid', bd=1, bg='white', show='*').pack(fill='x', ipady=6, pady=(4,10))
 
@@ -928,9 +928,13 @@ class App(tk.Tk):
             generate_report(tables, apis, classes, ai_result, str(src), plan, str(out_file), files=files)
             self._log(f'✅ 완료! → {out_file}', 'ok')
 
-            import webbrowser
-            webbrowser.open(out_file.as_uri())
-            messagebox.showinfo('완료', f'설계 문서 생성 완료!\n\n{out_file}')
+            import subprocess
+            # 결과 폴더만 열기 (브라우저 자동 실행 없음)
+            try:
+                subprocess.Popen(f'explorer /select,"{out_file}"')
+            except: pass
+            messagebox.showinfo('완료',
+                f'설계 문서 생성 완료!\n\n저장 위치:\n{out_file}\n\n파일을 더블클릭하면 브라우저에서 열립니다.')
 
         except Exception as e:
             import traceback
