@@ -801,12 +801,72 @@ def call_gemini_api(api_key, tables, apis, classes, plan_text=''):
     return 'Gemini API 오류 (3회 재시도 실패): ' + last_error
 
 
-def call_ai_api(api_key, tables, apis, classes, plan_text=''):
-    if not api_key:
-        return ''
-    if api_key.startswith('AIza'):
-        return call_gemini_api(api_key, tables, apis, classes, plan_text)
-    return call_claude_api(api_key, tables, apis, classes, plan_text)
+
+# ── Groq API 호출 (Gemini 실패시 폴백) ───────────────────
+def call_groq_api(api_key, tables, apis, classes, plan_text=''):
+    import json, urllib.request, urllib.error
+    tbl_names = list(tables.keys())[:10]
+    api_sample = [a['method']+' '+a['path'] for a in apis[:6]]
+    cls_names = [c['name'] for c in classes[:10]]
+    plan_part = ('기획서 내용:\n' + plan_text[:2000]) if plan_text else ''
+    prompt = (
+        '아래는 Java 프로젝트 소스코드 분석 결과와 기획서입니다.\n'
+        + plan_part + '\n\n'
+        + '현재 소스 분석 결과:\n'
+        + '- 기존 테이블: ' + str(tbl_names) + '\n'
+        + '- API 수: ' + str(len(apis)) + '개\n'
+        + '- API 샘플: ' + str(api_sample) + '\n'
+        + '- 주요 클래스: ' + str(cls_names) + '\n\n'
+        + '다음 항목을 한국어로 작성해주세요:\n'
+        + '1. 시스템 전체 구조 요약 (3줄)\n'
+        + '2. 기획서 기반 신규 추가 필요 테이블 목록 및 설명\n'
+        + '3. 기존 테이블 중 변경 필요한 항목 (컬럼 추가/수정)\n'
+        + '4. 신규 개발 필요 API 목록\n'
+        + '5. 설계 보완 필요 항목'
+    )
+    try:
+        payload = json.dumps({
+            'model': 'llama-3.3-70b-versatile',
+            'messages': [{'role': 'user', 'content': prompt}],
+            'max_tokens': 2048,
+            'temperature': 0.7
+        }).encode('utf-8')
+        req = urllib.request.Request(
+            'https://api.groq.com/openai/v1/chat/completions',
+            data=payload,
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + api_key
+            }, method='POST')
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read())
+            return data['choices'][0]['message']['content']
+    except Exception as e:
+        return 'Groq API 오류: ' + str(e)
+
+def call_ai_api(api_key, groq_key, tables, apis, classes, plan_text=''):
+    # Gemini 시도
+    if api_key and api_key.startswith('AIza'):
+        result = call_gemini_api(api_key, tables, apis, classes, plan_text)
+        if not (result.startswith('Gemini API 오류') or 'Error' in result[:30]):
+            return result, 'Gemini'
+        # Gemini 실패 → Groq 폴백
+        if groq_key and groq_key.startswith('gsk_'):
+            result2 = call_groq_api(groq_key, tables, apis, classes, plan_text)
+            if not result2.startswith('Groq API 오류'):
+                return result2, 'Groq (폴백)'
+        return result, 'failed'
+    # Groq만 있는 경우
+    if groq_key and groq_key.startswith('gsk_'):
+        result = call_groq_api(groq_key, tables, apis, classes, plan_text)
+        if not result.startswith('Groq API 오류'):
+            return result, 'Groq'
+        return result, 'failed'
+    # Claude
+    if api_key and api_key.startswith('sk-ant'):
+        result = call_claude_api(api_key, tables, apis, classes, plan_text)
+        return result, 'Claude'
+    return '', 'none'
 
 class App(tk.Tk):
     def __init__(self):
@@ -848,7 +908,7 @@ class App(tk.Tk):
         tk.Label(body, text='Gemini: AIzaSy...  /  Claude: sk-ant...  (없으면 규칙 기반만 생성)',
                  bg='#f1f5f9', fg='#94a3b8', font=('맑은 고딕',8)).pack(anchor='w', pady=(0,6))
 
-        self._label(body, '⑤ 생성 산출물')
+        self._label(body, '⑥ 생성 산출물')
         opt = tk.Frame(body, bg='#f1f5f9'); opt.pack(fill='x', pady=(4,14))
         self._ce = tk.BooleanVar(value=True); self._ct = tk.BooleanVar(value=True)
         self._ca = tk.BooleanVar(value=True); self._cc = tk.BooleanVar(value=True)
@@ -872,6 +932,24 @@ class App(tk.Tk):
     def _label(self, p, t):
         tk.Label(p, text=t, bg='#f1f5f9', fg='#475569',
                  font=('맑은 고딕',10,'bold')).pack(anchor='w', pady=(0,2))
+
+    def _config_path(self):
+        return Path(__file__).parent / 'config.json'
+
+    def _load_config(self):
+        try:
+            cfg = json.loads(self._config_path().read_text(encoding='utf-8'))
+            self._ak.set(cfg.get('gemini_key', ''))
+            self._gk.set(cfg.get('groq_key', ''))
+        except: pass
+
+    def _save_config(self):
+        try:
+            cfg = {'gemini_key': self._ak.get(), 'groq_key': self._gk.get()}
+            self._config_path().write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding='utf-8')
+            messagebox.showinfo('저장 완료', 'API 키가 저장됐어요!\n다음 실행시 자동으로 입력됩니다.')
+        except Exception as e:
+            messagebox.showerror('저장 실패', str(e))
 
     def _row(self, p, label, var, cmd, color):
         self._label(p, label)
@@ -904,6 +982,7 @@ class App(tk.Tk):
             plan = self._pv.get().strip()
             out_dir = Path(self._ov.get())
             api_key = self._ak.get().strip()
+            groq_key = self._gk.get().strip()
             out_file = out_dir / f'design_doc_{datetime.now().strftime("%Y%m%d_%H%M%S")}.html'
 
             self._log(f'소스: {src}', 'info')
@@ -944,10 +1023,11 @@ class App(tk.Tk):
                         p.feed(Path(plan).read_text(encoding='utf-8',errors='ignore'))
                         plan_text = '\n'.join(p.text)
                     except: pass
-                ai_result = call_ai_api(api_key, tables, apis, classes, plan_text)
+                    groq_key = self._gk.get().strip()
+                ai_result, ai_source = call_ai_api(api_key, groq_key, tables, apis, classes, plan_text)
 
                 # AI 실패 여부 확인
-                if ai_result.startswith('Gemini API 오류') or ai_result.startswith('AI 분석 실패') or 'Error' in ai_result[:30]:
+                if ai_source == 'failed' or ai_result.startswith('Gemini API 오류') or ai_result.startswith('AI 분석 실패'):
                     self._log('      → AI 분석 실패: ' + ai_result[:80], 'err')
                     # 사용자에게 계속할지 물어보기
                     import queue as _queue
@@ -970,7 +1050,7 @@ class App(tk.Tk):
                     ai_result = ''  # AI 없이 진행
                     self._log('      → AI 없이 저장 진행', 'warn')
                 else:
-                    self._log('      → AI 분석 완료 ✓', 'ok')
+                    self._log('      → AI 분석 완료 ✓ (' + ai_source + ')', 'ok')
             else:
                 self._log('[5/5] API 키 없음 — 규칙 기반으로만 생성', 'warn')
 
