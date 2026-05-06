@@ -771,11 +771,17 @@ def call_gemini_api(api_key, tables, apis, classes, plan_text=''):
             'generationConfig': {
                 'maxOutputTokens': 2048,
                 'temperature': 0.7
-            }
+            },
+            'safetySettings': [
+                {'category': 'HARM_CATEGORY_HARASSMENT', 'threshold': 'BLOCK_NONE'},
+                {'category': 'HARM_CATEGORY_HATE_SPEECH', 'threshold': 'BLOCK_NONE'},
+                {'category': 'HARM_CATEGORY_SEXUALLY_EXPLICIT', 'threshold': 'BLOCK_NONE'},
+                {'category': 'HARM_CATEGORY_DANGEROUS_CONTENT', 'threshold': 'BLOCK_NONE'}
+            ]
         }).encode('utf-8')
         # gemini-2.0-flash 사용 (더 안정적)
         url = ('https://generativelanguage.googleapis.com/v1beta'
-               '/models/gemini-2.0-flash:generateContent?key=' + api_key)
+               '/models/gemini-2.5-flash:generateContent?key=' + api_key)
         req = urllib.request.Request(url, data=payload,
             headers={'Content-Type': 'application/json'}, method='POST')
         with urllib.request.urlopen(req, timeout=120) as resp:
