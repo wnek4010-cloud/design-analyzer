@@ -777,9 +777,15 @@ def call_gemini_api(api_key, tables, apis, classes, plan_text=''):
     url = ('https://generativelanguage.googleapis.com/v1beta'
            '/models/gemini-2.5-flash:generateContent?key=' + api_key)
 
-    # 최대 3번 자동 재시도 (503/429 대응)
+    # 503/429은 1회만 재시도 후 빠르게 폴백 (구글 과부하는 분 단위라 길게 기다려도 의미 없음)
+    # 그 외 일시 오류는 최대 3회 재시도
     last_error = ''
-    for attempt in range(3):
+    max_attempts_for_overload = 2  # 503/429: 1회 재시도 (총 2회 시도)
+    max_attempts_default = 3       # 그 외: 2회 재시도 (총 3회 시도)
+    overload_hit = False
+
+    attempt = 0
+    while True:
         try:
             req = urllib.request.Request(url, data=payload,
                 headers={'Content-Type': 'application/json'}, method='POST')
@@ -788,17 +794,28 @@ def call_gemini_api(api_key, tables, apis, classes, plan_text=''):
                 return data['candidates'][0]['content']['parts'][0]['text']
         except urllib.error.HTTPError as e:
             err_body = e.read().decode('utf-8', errors='ignore')
-            last_error = str(e) + '\n' + err_body[:300]
-            if e.code in (503, 429, 500):
-                wait = (attempt + 1) * 5
-                time.sleep(wait)
+            last_error = 'HTTP ' + str(e.code) + ': ' + (e.reason or '') + '\n' + err_body[:300]
+            if e.code in (503, 429):
+                overload_hit = True
+                attempt += 1
+                if attempt >= max_attempts_for_overload:
+                    return 'Gemini API 오류 (서버 과부하 503/429, ' + str(attempt) + '회 시도): ' + last_error
+                time.sleep(15)  # 과부하는 길게 대기
+                continue
+            if e.code == 500:
+                attempt += 1
+                if attempt >= max_attempts_default:
+                    return 'Gemini API 오류 (3회 재시도 실패): ' + last_error
+                time.sleep(5)
                 continue
             return 'Gemini API 오류: ' + last_error
         except Exception as e:
             last_error = str(e)
+            attempt += 1
+            if attempt >= max_attempts_default:
+                return 'Gemini API 오류 (3회 재시도 실패): ' + last_error
             time.sleep(5)
             continue
-    return 'Gemini API 오류 (3회 재시도 실패): ' + last_error
 
 
 
@@ -851,11 +868,17 @@ def call_ai_api(api_key, groq_key, tables, apis, classes, plan_text=''):
         if not (result.startswith('Gemini API 오류') or 'Error' in result[:30]):
             return result, 'Gemini'
         # Gemini 실패 → Groq 폴백
+        gemini_err = result
         if groq_key and groq_key.startswith('gsk_'):
             result2 = call_groq_api(groq_key, tables, apis, classes, plan_text)
             if not result2.startswith('Groq API 오류'):
-                return result2, 'Groq (폴백)'
-        return result, 'failed'
+                return result2, 'Groq (폴백 성공)'
+            # 둘 다 실패 - 두 오류 다 보여주기
+            combined = ('[Gemini 실패]\n' + gemini_err[:250] +
+                        '\n\n[Groq 폴백도 실패]\n' + result2[:250])
+            return combined, 'failed'
+        # Groq 키 없음 - Gemini 오류만
+        return gemini_err + '\n\n(Groq 폴백 키가 입력되지 않아 폴백 시도 안 함)', 'failed'
     # Groq만 있는 경우
     if groq_key and groq_key.startswith('gsk_'):
         result = call_groq_api(groq_key, tables, apis, classes, plan_text)
@@ -1043,14 +1066,18 @@ class App(tk.Tk):
 
                 # AI 실패 여부 확인
                 if ai_source == 'failed' or ai_result.startswith('Gemini API 오류') or ai_result.startswith('AI 분석 실패'):
-                    self._log('      → AI 분석 실패: ' + ai_result[:80], 'err')
+                    self._log('      → AI 분석 실패', 'err')
+                    # 로그 창에 전체 오류 내용 출력 (디버깅용)
+                    for line in ai_result.split('\n'):
+                        if line.strip():
+                            self._log('         ' + line[:200], 'err')
                     # 사용자에게 계속할지 물어보기
                     import queue as _queue
                     _q = _queue.Queue()
                     def _ask():
                         ans = messagebox.askyesno(
                             'AI 분석 실패',
-                            'AI 분석에 실패했습니다.\n\n오류 내용:\n' + ai_result[:120] + '\n\n'
+                            'AI 분석에 실패했습니다.\n\n오류 내용:\n' + ai_result[:600] + '\n\n'
                             'AI 분석 없이 나머지 산출물\n(테이블정의서/API명세서/클래스)만 저장할까요?'
                         )
                         _q.put(ans)
