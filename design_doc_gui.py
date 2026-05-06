@@ -741,6 +741,51 @@ function show(id,btn){{
 METHOD_COLOR = {'GET':'#059669','POST':'#2563eb','PUT':'#d97706',
                 'DELETE':'#dc2626','PATCH':'#7c3aed','ALL':'#64748b'}
 
+
+# ── Gemini API 호출 ──────────────────────────────────────
+def call_gemini_api(api_key, tables, apis, classes, plan_text=''):
+    try:
+        import json, urllib.request
+        tbl_names = list(tables.keys())[:15]
+        api_sample = [a['method']+' '+a['path'] for a in apis[:8]]
+        cls_names = [c['name'] for c in classes[:15]]
+        plan_part = ('기획서 내용:\n' + plan_text[:3000]) if plan_text else ''
+        prompt = (
+            '아래는 Java 프로젝트 소스코드 분석 결과와 기획서입니다.\n'
+            + plan_part + '\n\n'
+            + '현재 소스 분석 결과:\n'
+            + '- 기존 테이블: ' + str(tbl_names) + '\n'
+            + '- API 수: ' + str(len(apis)) + '개\n'
+            + '- API 샘플: ' + str(api_sample) + '\n'
+            + '- 주요 클래스: ' + str(cls_names) + '\n\n'
+            + '다음 항목을 한국어로 작성해주세요:\n'
+            + '1. 시스템 전체 구조 요약 (3줄)\n'
+            + '2. 기획서 기반 신규 추가 필요 테이블 목록 및 설명\n'
+            + '3. 기존 테이블 중 변경 필요한 항목 (컬럼 추가/수정)\n'
+            + '4. 신규 개발 필요 API 목록\n'
+            + '5. 설계 보완 필요 항목'
+        )
+        payload = json.dumps({
+            'contents': [{'parts': [{'text': prompt}]}],
+            'generationConfig': {'maxOutputTokens': 2048}
+        }).encode('utf-8')
+        url = ('https://generativelanguage.googleapis.com/v1beta'
+               '/models/gemini-1.5-flash:generateContent?key=' + api_key)
+        req = urllib.request.Request(url, data=payload,
+            headers={'Content-Type': 'application/json'}, method='POST')
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read())
+            return data['candidates'][0]['content']['parts'][0]['text']
+    except Exception as e:
+        return 'Gemini API 오류: ' + str(e)
+
+def call_ai_api(api_key, tables, apis, classes, plan_text=''):
+    if not api_key:
+        return ''
+    if api_key.startswith('AIza'):
+        return call_gemini_api(api_key, tables, apis, classes, plan_text)
+    return call_claude_api(api_key, tables, apis, classes, plan_text)
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -773,7 +818,7 @@ class App(tk.Tk):
         self._row(body, '③ 저장 위치', self._ov,
                   lambda: self._ov.set(filedialog.askdirectory() or self._ov.get()), '#64748b')
 
-        self._label(body, '④ Anthropic API 키 (선택)')
+        self._label(body, '④ API 키 (선택)  Gemini: AIza...  /  Claude: sk-ant...')
         self._ak = tk.StringVar()
         tk.Entry(body, textvariable=self._ak, font=('맑은 고딕',10),
                  relief='solid', bd=1, bg='white', show='*').pack(fill='x', ipady=6, pady=(4,10))
@@ -874,10 +919,10 @@ class App(tk.Tk):
                         p.feed(Path(plan).read_text(encoding='utf-8',errors='ignore'))
                         plan_text = '\n'.join(p.text)
                     except: pass
-                ai_result = call_claude_api(api_key, tables, apis, classes, plan_text)
+                ai_result = call_ai_api(api_key, tables, apis, classes, plan_text)
                 self._log('      → AI 분석 완료', 'ok')
             else:
-                self._log('[5/5] API 키 없음 — 규칙 기반으로만 생성', 'warn')
+                self._log('[5/5] API 키 없음 — 규칙 기반으로만 생성 (Gemini/Claude 키 입력시 AI 분석 추가)', 'warn')
 
             self._log('리포트 생성 중...', 'info')
             generate_report(tables, apis, classes, ai_result, str(src), plan, str(out_file), files=files)
