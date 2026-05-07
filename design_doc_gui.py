@@ -312,7 +312,8 @@ def call_claude_api(api_key, tables, apis, classes, plan_text=''):
         req = urllib.request.Request(
             'https://api.anthropic.com/v1/messages', data=payload,
             headers={'Content-Type':'application/json','x-api-key':api_key,
-                     'anthropic-version':'2023-06-01'}, method='POST')
+                     'anthropic-version':'2023-06-01',
+                     'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) DesignAnalyzer/1.0'}, method='POST')
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())['content'][0]['text']
     except Exception as e:
@@ -873,7 +874,10 @@ def call_gemini_api(api_key, tables, apis, classes, plan_text=''):
     while True:
         try:
             req = urllib.request.Request(url, data=payload,
-                headers={'Content-Type': 'application/json'}, method='POST')
+                headers={
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) DesignAnalyzer/1.0'
+                }, method='POST')
             with urllib.request.urlopen(req, timeout=120) as resp:
                 data = json.loads(resp.read())
                 cand = data.get('candidates', [{}])[0]
@@ -931,7 +935,11 @@ def call_groq_api(api_key, tables, apis, classes, plan_text=''):
             data=payload,
             headers={
                 'Content-Type': 'application/json',
-                'Authorization': 'Bearer ' + api_key
+                'Authorization': 'Bearer ' + api_key,
+                # Cloudflare가 Python-urllib 기본 User-Agent를 봇으로 판단해
+                # 403 + error code: 1010으로 차단하므로 일반 브라우저처럼 위장
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) DesignAnalyzer/1.0',
+                'Accept': 'application/json'
             }, method='POST')
         with urllib.request.urlopen(req, timeout=60) as resp:
             data = json.loads(resp.read())
